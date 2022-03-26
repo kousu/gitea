@@ -1,0 +1,60 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+  # This second trigger covers the case where you
+  # delete and recreate from an existing tag
+  release:
+    types:
+      - created
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y make git xz-utils
+      # per README.md, building needs Go 1.17 and Node LTS
+      - uses: actions/setup-go@v2
+        with:
+          go-version: '^1.17' # The Go version to download (if necessary) and use.
+      - uses: actions/setup-node@v2
+        with:
+          node-version: 'lts/*'
+
+      - name: Build Release Assets
+        # The officially releases use 'make release' (https://github.com/neuropoly/gitea/blob/65e42f83e916af771a51af6a3f8db483ffa05c05/.drone.yml#L772)
+        # but that does cross-compilation (via docker (via https://github.com/techknowlogick/xgo))
+        # which is overhead and complication I don't need or want to deal with.
+        #
+        # Instead, just do native Linux compilation then pretend we did 'make release'.
+        run: |
+          TAGS="bindata sqlite sqlite_unlock_notify" make build
+          mkdir -p dist/release
+          cp -p gitea dist/release/gitea-$(git describe --tags --always)-linux-amd64
+
+      - name: Compress Release Assets
+        run: |
+          xz -k dist/release/*
+
+      - name: Checksum Release Assets
+        # each release asset in the official build process gets a separate .sha256 file
+        # which means we need a loop to emulate it
+        run: |
+          (cd dist/release; for asset in *; do sha256sum $asset > $asset.sha256; done)
+
+      - name: Upload Release
+        # this Action creates the release if not yet created
+        uses: softprops/action-gh-release@v1
+        with:
+          # We don't have .drone.yml's pretty changelog
+          #  generator, so just zero-out the release notes
+          body: ''
+          files: 'dist/release/*'
+          fail_on_unmatched_files: true
