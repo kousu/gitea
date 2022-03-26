@@ -1,0 +1,145 @@
+# This soft-fork of Gitea adds git-annex support (https://git-annex.branchable.com/)
+# git-annex is like git-lfs, which Gitea already supports, but more complicated,
+# except that it doesn't need an extra port open.
+#
+# We maintain three branches and N tags:
+# - main           - a mirror of upstream's main
+# - git-annex      - our patch (see it at: https://github.com/neuropoly/gitea/pull/1)
+# - release-action - release scripts + our front page
+# - $X-git-annex for each upstream tag $X (each created after we started tracking upstream, that is)
+#     which = $X + release-action + git-annex
+#
+# This branch, release-action, contains:
+#  - sync-upstream.yml (this)  - try to update the branches/tags
+#  - release.yml               - build and push to https://github.com/neuropoly/gitea/releases/
+# and it is our default branch because cronjobs are
+# only allowed to run on the default branch
+
+name: 'Sync Upstream'
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 08:00 Montreal time, every day
+    - cron:  '0 13 * * *'
+
+jobs:
+  sync_upstream:
+    name: 'Sync Upstream'
+    runs-on: ubuntu-latest
+    steps:
+
+    #- name: debug - github object
+    #  run: |
+    #    echo '${{ tojson(github) }}'
+
+    - name: Git Identity
+      run: |
+        set -ex
+        git config --global user.name "Actions Bot"
+        # or 41898282+github-actions[bot]@users.noreply.github.com ?
+        git config --global user.email action@github.com
+
+    #- name: Git config
+    #  run: |
+    #    set -ex
+    #    # disambiguates 'git checkout' so it always uses this repo
+    #    #git config --global checkout.defaultRemote origin
+
+    - uses: actions/checkout@v3
+
+    - name: Add upstream
+      run: |
+        set -ex
+
+        PARENT=$(curl -s https://api.github.com/repos/${{github.repository}} | jq -r '.parent.clone_url // empty')
+        git remote add upstream "$PARENT"
+
+
+    - name: Fetch current origin
+      run: |
+        set -ex
+        # Because actions/checkout does a lazy, shallow checkout
+        # we need to use --shallow-since to make sure there's
+        # enough common history that git can tell how the two
+        # branches relate.
+        #
+        # We *could* do a full checkout by setting depth: 0 above,
+        # but this is faster, especially on a large repo like this one.
+        #
+        # Since this runs daily, 1 week should be plenty.
+        git fetch '--shallow-since=1 week' origin main "${{ github.ref_name }}" git-annex
+        git fetch '--shallow-since=1 week' upstream main
+
+    - name: Sync main
+      # force main to be identical to upstream
+      # This throws away any commits to our local main
+      # so don't commit anything to that branch.
+      run: |
+        set -ex
+        git checkout -B main upstream/main
+
+    - name: Sync ${{ github.ref_name }}
+      run: |
+        set -ex
+        git checkout "${{ github.ref_name }}"
+        git rebase main
+
+    - name: Rebase git-annex, the feature branch
+      # This is the meatiest part of this script: rebase git-annex on top of upstream.
+      # Occasionally this step will fail -- when there's a merge conflict with upstream.
+      # In that case, you will get an email about it, and you should run these steps
+      # manually, and fix the merge conflicts that way.
+      run: |
+        set -ex
+        git checkout git-annex
+        git rebase main
+
+    - name: Construct latest version with git-annex on top
+      run: |
+        # for the latest tag vX.Y.Z, construct tag vX.Y.Z-git-annex.
+        # Only construct the *latest* release to reduce the risk of conflicts
+        # (we have to ask 'git tag' instead of the more elegant method of syncing tags
+        #  and using Github Actions' `on: push: tags: ...` because those upstream tags
+        #  *don't contain this workflow*, so there would be no way to trigger this)
+        #
+        # This will trigger release.yml to build and publish the latest version, too
+        set -e
+
+        # git fetch is supposed to get any tags corresponding to commits it downloads,
+        # but this behaviour is ignored when combined with --shallow, and there doesn't
+        # seem to be any other way to get a list of tags without downloading all of them,
+        # which effectively does --unshallow. But the GitHub API provides a shortcut, and
+        # using this saves about 30s over downloading the unshallow repo:
+        PARENT_API=$(curl -s https://api.github.com/repos/${{github.repository}} | jq -r '.parent.url // empty')
+        PARENT_TAGS=$(curl -s "$PARENT_API"| jq -r '.tags_url // empty')
+        RELEASE=$(curl -s "$PARENT_TAGS" | jq -r 'map(.name | select(test("dev") | not)) | first // empty')
+        # https://stackoverflow.com/questions/26617862/git-shallow-fetch-of-a-new-tag
+        git fetch --depth 1 upstream tag "$RELEASE"
+
+        # But if we decide to just unshallow the entire repo from the start,
+        # then you can use this instead:
+        #RELEASE="$(git tag -l --sort=-v:refname | egrep -v 'git-annex$' | head -n 1)"
+
+        if git fetch -q --depth 1 origin tag "$RELEASE"-git-annex 2>/dev/null; then
+          echo "$RELEASE-git-annex already published :tada:"
+        else
+          set -x
+          git checkout -q "$RELEASE"
+          git cherry-pick main.."${{ github.ref_name }}"  # Make sure release.yml is in the tag, so it triggers a build
+          git cherry-pick main..git-annex
+          git tag "$RELEASE"-git-annex
+
+          # If this step fails due to merge conflicts,
+          # it's probably because the most recent merge conflict
+          # occurred somewhere after the most recent release but
+          # before the current upstream/main.
+          #
+          # You should just manually create the tag, and fix the merge conflicts.
+          # This won't try to overwrite a pre-existing tag.
+        fi
+
+    - name: Upload everything back to Github
+      run: |
+        git push -f --all
+        git push -f --tags
