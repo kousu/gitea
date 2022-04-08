@@ -114,8 +114,11 @@ jobs:
         PARENT_API=$(curl -s https://api.github.com/repos/${{github.repository}} | jq -r '.parent.url // empty')
         PARENT_TAGS=$(curl -s "$PARENT_API"| jq -r '.tags_url // empty')
         RELEASE=$(curl -s "$PARENT_TAGS" | jq -r 'map(.name | select(test("dev") | not)) | first // empty')
+
         # https://stackoverflow.com/questions/26617862/git-shallow-fetch-of-a-new-tag
-        git fetch --depth 1 upstream tag "$RELEASE"
+        # --shallow-exclude=HEAD seems to get enough history that we can push back
+        # all necessary tags, but I'm a bit unclear if that's correct
+        git fetch --shallow-exclude=HEAD upstream tag "$RELEASE"
 
         # But if we decide to just unshallow the entire repo from the start,
         # then you can use this instead:
