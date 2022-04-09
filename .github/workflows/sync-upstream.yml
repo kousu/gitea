@@ -46,7 +46,64 @@ jobs:
     #    # disambiguates 'git checkout' so it always uses this repo
     #    #git config --global checkout.defaultRemote origin
 
+    - id: generate_token
+      # The default token provided doesn't have enough rights
+      # for 'git push --tags' to trigger the build in release.yml:
+      #
+      # > When you use the repository's GITHUB_TOKEN to perform tasks, events
+      # > triggered by the GITHUB_TOKEN will not create a new workflow run.
+      # > This prevents you from accidentally creating recursive workflow runs.
+      #
+      # ref: https://docs.github.com/en/actions/security-guides/automatic-token-authentication#using-the-github_token-in-a-workflow
+      #
+      # But we're not making a recursive workflow, and really do want to
+      # trigger the release.yml workflow.
+      #
+      # https://github.com/tibdex/github-app-token works around this by
+      # trading OAuth credentials (created at the Organization level) for
+      # a token credential (which can't be created except at the user level)
+      #
+      # Two alternate solutions are:
+      #
+      # 1. Provide a personal token (https://github.com/settings/tokens) but then
+      #    whoever does exposes their account to everyone in the organization,
+      #    and the organization is exposed to DoS if the person ever leaves.
+      # 2. Use workflow_call: (https://docs.github.com/en/actions/using-workflows/reusing-workflows)
+      #    but this is a substantial amount of intricate code
+      #    for something that should be simple.
+      #
+      # If you need to reconfigure this, know that you need to:
+      #
+      # 1. Create an OAuth credential at https://github.com/organizations/neuropoly/settings/apps
+      #   a. Set 'Name' = 'gitea-sync'
+      #   b. Set 'Homepage URL' = 'https://github.com/neuropoly/github-app-token'
+      #   c. Uncheck 'Webhook'
+      #   d. Set 'Repository permissions / Contents' = 'Access: Read & write'.
+      #   e. Set 'Where can this GitHub App be installed' = 'Only on this account'
+      # 2. Click 'Generate Private Key'; it will download a .pem file to your computer.
+      # 3. Store the credential in the repo at https://github.com/neuropoly/gitea/settings/secrets/actions
+      #    a. Set 'APP_ID' = the app ID displayed on https://github.com/organizations/neuropoly/settings/apps/gitea-sync
+      #    b. Set 'APP_KEY' = the contents of the .pem file it downloaded.
+      #    c. Now you can throw away the .pem file.
+      # 4. Install the app:
+      #    a. Go to https://github.com/organizations/neuropoly/settings/apps/gitea-sync/installations
+      #    b. Click 'Install'
+      #    c. Pick this repo
+      #    d. Click 'Install' for real this time
+      #
+      # ref: https://github.com/peter-evans/create-pull-request/blob/main/docs/concepts-guidelines.md#authenticating-with-github-app-generated-tokens
+      #
+      # Notice too: we've **forked** a copy of tibdex/github-app-token,
+      # to avoid passing our tokens through potentially untrusted code.
+      # Even if it is safe now, it might become malicious in the future.
+      uses: neuropoly/github-app-token@v1.5.1
+      with:
+        app_id: ${{ secrets.APP_ID }}
+        private_key: ${{ secrets.APP_KEY }}
+
     - uses: actions/checkout@v3
+      with:
+        token: ${{ steps.generate_token.outputs.token }}
 
     - name: Add upstream
       run: |
@@ -133,7 +190,6 @@ jobs:
           git cherry-pick main.."${{ github.ref_name }}"  # Make sure release.yml is in the tag, so it triggers a build
           git cherry-pick main..git-annex
           git tag "$RELEASE"-git-annex
-          echo "::set-output name=ref::$RELEASE-git-annex"
 
           # If this step fails due to merge conflicts,
           # it's probably because the most recent merge conflict
@@ -148,34 +204,3 @@ jobs:
       run: |
         git push -f --all
         git push -f --tags
-
-    outputs:
-      release: '${{ steps.fork.outputs.ref }}'
-
-  release:
-    # 'git push --tags' above is not enough to trigger release.yml
-    # because per https://docs.github.com/en/actions/security-guides/automatic-token-authentication#using-the-github_token-in-a-workflow
-    #
-    # > When you use the repository's GITHUB_TOKEN to perform tasks,
-    # > events triggered by the GITHUB_TOKEN will not create a new
-    # > workflow run.
-    #
-    # https://github.community/t/push-from-workflow-not-doesnt-trigger-on-push-tags-workflow/149151/2
-    # suggests providing actions/checkout a *personal* access token,
-    # as a workaround, meaning a token that is
-    #
-    # a. tied to a member instead of the organization, and will break if they leave
-    # b. probably has too much permission to that member's account
-    #
-    # GitHub perhaps used to have "service accounts", whose tokens
-    # could be provided without, but I can't figure out how to use them
-    # or if they still exist as a feature.
-    #
-    # Instead, invoke release.yml explicitly, using Reusable Workflows
-    runs-on: ubuntu-latest
-    name: 'Release'
-    needs: sync_upstream
-    if: "${{ needs.sync_upstream.outputs.release }}"
-    uses: ./.github/workflows/release.yml
-    with:
-      tag_name: "${{ needs.sync_upstream.outputs.release }}"
