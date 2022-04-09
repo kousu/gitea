@@ -1,6 +1,19 @@
 name: Release
 
 on:
+
+  workflow_call:
+    inputs:
+      ref:
+        required: false
+        type: string
+
+  workflow_dispatch:
+    inputs:
+      ref:
+        required: false
+        type: string
+
   push:
     tags:
       - "v*.*.*"
@@ -16,6 +29,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+        with:
+          ref: '${{ inputs.ref }}' # provided by the workflow_call trigger
+                                   # but in the other cases, this is empty
+                                   # and falls back to ${{ github.ref }}
 
       - name: Install toolchain
         run: |
@@ -58,3 +75,6 @@ jobs:
           body: ''
           files: 'dist/release/*'
           fail_on_unmatched_files: true
+          tag_name: '${{ inputs.ref }}' # provided by the workflow_call trigger
+                                        # but in the other cases, this is empty
+                                        # and falls back to ${{ github.ref }}

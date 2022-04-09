@@ -96,6 +96,7 @@ jobs:
         git rebase main
 
     - name: Construct latest version with git-annex on top
+      id: fork
       run: |
         # for the latest tag vX.Y.Z, construct tag vX.Y.Z-git-annex.
         # Only construct the *latest* release to reduce the risk of conflicts
@@ -132,6 +133,7 @@ jobs:
           git cherry-pick main.."${{ github.ref_name }}"  # Make sure release.yml is in the tag, so it triggers a build
           git cherry-pick main..git-annex
           git tag "$RELEASE"-git-annex
+          echo "::set-output name=ref::$RELEASE-git-annex"
 
           # If this step fails due to merge conflicts,
           # it's probably because the most recent merge conflict
@@ -146,3 +148,34 @@ jobs:
       run: |
         git push -f --all
         git push -f --tags
+
+    outputs:
+      release: '${{ steps.fork.outputs.ref }}'
+
+  release:
+    # 'git push --tags' above is not enough to trigger release.yml
+    # because per https://docs.github.com/en/actions/security-guides/automatic-token-authentication#using-the-github_token-in-a-workflow
+    #
+    # > When you use the repository's GITHUB_TOKEN to perform tasks,
+    # > events triggered by the GITHUB_TOKEN will not create a new
+    # > workflow run.
+    #
+    # https://github.community/t/push-from-workflow-not-doesnt-trigger-on-push-tags-workflow/149151/2
+    # suggests providing actions/checkout a *personal* access token,
+    # as a workaround, meaning a token that is
+    #
+    # a. tied to a member instead of the organization, and will break if they leave
+    # b. probably has too much permission to that member's account
+    #
+    # GitHub perhaps used to have "service accounts", whose tokens
+    # could be provided without, but I can't figure out how to use them
+    # or if they still exist as a feature.
+    #
+    # Instead, invoke release.yml explicitly, using Reusable Workflows
+    runs-on: ubuntu-latest
+    name: 'Release'
+    needs: sync_upstream
+    if: "${{ needs.sync_upstream.outputs.release }}"
+    uses: ./.github/workflows/release.yml
+    with:
+      tag_name: "${{ needs.sync_upstream.outputs.release }}"
