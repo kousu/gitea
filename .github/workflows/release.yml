@@ -55,7 +55,8 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           # We don't have .drone.yml's pretty changelog
-          #  generator, so just zero-out the release notes
-          body: ''
+          #  generator, so just empty the release notes
+          # ('' doesn't work, it needs at least one character)
+          body: '.'
           files: 'dist/release/*'
           fail_on_unmatched_files: true
