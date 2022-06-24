@@ -112,7 +112,6 @@ jobs:
         PARENT=$(curl -s https://api.github.com/repos/${{github.repository}} | jq -r '.parent.clone_url // empty')
         git remote add upstream "$PARENT"
 
-
     - name: Fetch current origin
       run: |
         set -ex
@@ -173,11 +172,6 @@ jobs:
         PARENT_TAGS=$(curl -s "$PARENT_API"| jq -r '.tags_url // empty')
         RELEASE=$(curl -s "$PARENT_TAGS" | jq -r 'map(.name | select(test("dev") | not)) | first // empty')
 
-        # https://stackoverflow.com/questions/26617862/git-shallow-fetch-of-a-new-tag
-        # --shallow-exclude=HEAD seems to get enough history that we can push back
-        # all necessary tags, but I'm a bit unclear if that's correct
-        git fetch --shallow-exclude=HEAD upstream tag "$RELEASE"
-
         # But if we decide to just unshallow the entire repo from the start,
         # then you can use this instead:
         #RELEASE="$(git tag -l --sort=-v:refname | egrep -v 'git-annex$' | head -n 1)"
@@ -186,20 +180,55 @@ jobs:
           echo "$RELEASE-git-annex already published :tada:"
         else
           set -x
+          # BEWARE: the releases are tagged off of *release* branches:
+          #         https://github.com/go-gitea/gitea/tree/release/v1.18
+          #         https://github.com/go-gitea/gitea/tree/release/v1.17
+          #
+          #         These were branched from 'main' at some point, and since
+          #         have been added to with backport patches. For example,
+          #         https://github.com/go-gitea/gitea/pull/19567 is the backport
+          #         into v1.16 of https://github.com/go-gitea/gitea/pull/19566.
+          #         In that case, the two patches were identical, but it's possible
+          #         a merge conflict could force edits to the backport.
+          #
+          #         To fit into their scheme, we would have to manuually maintain
+          #         our own git-annex branch (based on upstream/main), another
+          #         release/v1.18-git-annex (based on upstream/release/v1.18), and a
+          #         release/v1.17-git-annex (based on upstream/release/v1.17), etc.
+          #
+          #         That seems like a lot of work, so we're taking a shortcut:
+          #         just cherry-pick main..git-annex on top of their releases
+          #         and hope for the best.
+          #
+          #         The only trouble I'm aware of with this is that a merge conflict
+          #         will show up against upstream/main but might not exist against
+          #         v1.19.1 or whatever the latest tag is; so fixing it for main will
+          #         cause a different merge conflict with the release.
+          #
+          #         But we only need each release to get tagged and published once
+          #         (see: the if statement above), so the best way to handle that case
+          #         is to manually fix the conflict against upstream/main, and at the
+          #         same time manually tag the latest release without the additional fixes.
+          #         This is basically the same work we would do anyway if we were manually
+          #         backporting every update to a separate release branch anyway, but
+          #         only needs to be investigated when the automated build fails.
+          #
+          #         tl;dr: If this step fails due to merge conflicts, you should
+          #         manually fix them and then manually create the tag,
+          #         sidestepping this
+
+          # Because the tags don't share close history with 'main', GitHub would reject us
+          # pushing them as dangling commit histories. So this part has to be --unshallow.
+          # It takes longer but oh well, GitHub can afford it.
+          git fetch --unshallow upstream tag "$RELEASE"
+
           git checkout -q "$RELEASE"
+
           git cherry-pick main.."${{ github.ref_name }}"  # Make sure release.yml is in the tag, so it triggers a build
           git cherry-pick main..git-annex
+
           git tag "$RELEASE"-git-annex
-
-          # If this step fails due to merge conflicts,
-          # it's probably because the most recent merge conflict
-          # occurred somewhere after the most recent release but
-          # before the current upstream/main.
-          #
-          # You should just manually create the tag, and fix the merge conflicts.
-          # This won't try to overwrite a pre-existing tag.
         fi
-
     - name: Upload everything back to Github
       run: |
         git push -f --all
