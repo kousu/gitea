@@ -37,6 +37,7 @@ import (
 
 const (
 	lfsAuthenticateVerb = "git-lfs-authenticate"
+	gitAnnexShellVerb   = "git-annex-shell"
 )
 
 // CmdServ represents the available serv sub-command.
@@ -89,6 +90,7 @@ var (
 		"git-upload-archive": perm.AccessModeRead,
 		"git-receive-pack":   perm.AccessModeWrite,
 		lfsAuthenticateVerb:  perm.AccessModeNone,
+		gitAnnexShellVerb:    perm.AccessModeNone, // annex permissions are enforced by GIT_ANNEX_SHELL_READONLY, rather than the Gitea API
 	}
 	alphaDashDotPattern = regexp.MustCompile(`[^\w-\.]`)
 )
@@ -201,6 +203,7 @@ func runServ(c *cli.Context) error {
 
 	verb := words[0]
 	repoPath := words[1]
+
 	if repoPath[0] == '/' {
 		repoPath = repoPath[1:]
 	}
@@ -216,8 +219,43 @@ func runServ(c *cli.Context) error {
 		}
 	}
 
+	if verb == gitAnnexShellVerb {
+		// if !setting.Annex.Enabled { // TODO: https://github.com/neuropoly/gitea/issues/8
+		if false {
+			return fail(ctx, "Unknown git command", "git-annex request over SSH denied, git-annex support is disabled")
+		}
+
+		if len(words) < 3 {
+			return fail(ctx, "Too few arguments", "Too few arguments in cmd: %s", cmd)
+		}
+
+		// git-annex always puts the repo in words[2], unlike most other
+		// git subcommands; and it sometimes names repos like /~/, as if
+		// $HOME should get expanded while also being rooted. e.g.:
+		//   git-annex-shell 'configlist' '/~/user/repo'
+		//   git-annex-shell 'sendkey' '/user/repo 'key'
+		repoPath = words[2]
+		repoPath = strings.TrimPrefix(repoPath, "/")
+		repoPath = strings.TrimPrefix(repoPath, "~/")
+	}
+
 	// LowerCase and trim the repoPath as that's how they are stored.
 	repoPath = strings.ToLower(strings.TrimSpace(repoPath))
+
+	// prevent directory traversal attacks
+	repoPath = filepath.Clean("/" + repoPath)[1:]
+
+	// put the sanitized repoPath back into the argument list for later
+	if verb == gitAnnexShellVerb {
+		// git-annex-shell demands an absolute path
+		absRepoPath, err := filepath.Abs(filepath.Join(setting.RepoRootPath, repoPath))
+		if err != nil {
+			return fail(ctx, "Error locating repoPath", "%v", err)
+		}
+		words[2] = absRepoPath
+	} else {
+		words[1] = repoPath
+	}
 
 	rr := strings.SplitN(repoPath, "/", 2)
 	if len(rr) != 2 {
@@ -305,21 +343,46 @@ func runServ(c *cli.Context) error {
 		return nil
 	}
 
-	var gitcmd *exec.Cmd
 	gitBinPath := filepath.Dir(git.GitExecutable) // e.g. /usr/bin
 	gitBinVerb := filepath.Join(gitBinPath, verb) // e.g. /usr/bin/git-upload-pack
 	if _, err := os.Stat(gitBinVerb); err != nil {
 		// if the command "git-upload-pack" doesn't exist, try to split "git-upload-pack" to use the sub-command with git
 		// ps: Windows only has "git.exe" in the bin path, so Windows always uses this way
+		// ps: git-annex-shell and other extensions may not necessarily be in gitBinPath,
+		//     but '{gitBinPath}/git annex-shell' should be able to find them on $PATH.
 		verbFields := strings.SplitN(verb, "-", 2)
 		if len(verbFields) == 2 {
 			// use git binary with the sub-command part: "C:\...\bin\git.exe", "upload-pack", ...
-			gitcmd = exec.CommandContext(ctx, git.GitExecutable, verbFields[1], repoPath)
+			gitBinVerb = git.GitExecutable
+			words = append([]string{verbFields[1]}, words...)
 		}
 	}
-	if gitcmd == nil {
-		// by default, use the verb (it has been checked above by allowedCommands)
-		gitcmd = exec.CommandContext(ctx, gitBinVerb, repoPath)
+
+	// by default, use the verb (it has been checked above by allowedCommands)
+	gitcmd := exec.CommandContext(ctx, gitBinVerb, words[1:]...)
+
+	if verb == gitAnnexShellVerb {
+		// This doesn't get its own isolated section like LFS does, because LFS
+		// is handled by internal Gitea routines, but git-annex has to be shelled out
+		// to like other git subcommands, so we need to build up gitcmd.
+
+		// TODO: does this work on Windows?
+		gitcmd.Env = append(gitcmd.Env,
+			// "If set, disallows running git-shell to handle unknown commands."
+			// - git-annex-shell(1)
+			"GIT_ANNEX_SHELL_LIMITED=True",
+			// "If set, git-annex-shell will refuse to run commands
+			//  that do not operate on the specified directory."
+			// - git-annex-shell(1)
+			fmt.Sprintf("GIT_ANNEX_SHELL_DIRECTORY=%s", words[2]),
+		)
+		if results.UserMode < perm.AccessModeWrite {
+			// "If set, disallows any action that could modify the git-annex repository."
+			// - git-annex-shell(1)
+			// We set this when the backend API has told us that we don't have write permission to this repo.
+			log.Debug("Setting GIT_ANNEX_SHELL_READONLY=True")
+			gitcmd.Env = append(gitcmd.Env, "GIT_ANNEX_SHELL_READONLY=True")
+		}
 	}
 
 	process.SetSysProcAttribute(gitcmd)

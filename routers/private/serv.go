@@ -81,12 +81,14 @@ func ServCommand(ctx *context.PrivateContext) {
 	ownerName := ctx.Params(":owner")
 	repoName := ctx.Params(":repo")
 	mode := perm.AccessMode(ctx.FormInt("mode"))
+	verbs := ctx.FormStrings("verb")
 
 	// Set the basic parts of the results to return
 	results := private.ServCommandResults{
 		RepoName:  repoName,
 		OwnerName: ownerName,
 		KeyID:     keyID,
+		UserMode:  perm.AccessModeNone,
 	}
 
 	// Now because we're not translating things properly let's just default some English strings here
@@ -287,8 +289,10 @@ func ServCommand(ctx *context.PrivateContext) {
 			repo.IsPrivate ||
 			owner.Visibility.IsPrivate() ||
 			(user != nil && user.IsRestricted) || // user will be nil if the key is a deploykey
+			( /*setting.Annex.Enabled && */ len(verbs) > 0 && verbs[0] == "git-annex-shell") || // git-annex has its own permission enforcement, for which we expose results.UserMode
 			setting.Service.RequireSignInView) {
 		if key.Type == asymkey_model.KeyTypeDeploy {
+			results.UserMode = deployKey.Mode
 			if deployKey.Mode < mode {
 				ctx.JSON(http.StatusUnauthorized, private.Response{
 					UserMsg: fmt.Sprintf("Deploy Key: %d:%s is not authorized to %s %s/%s.", key.ID, key.Name, modeString, results.OwnerName, results.RepoName),
@@ -310,9 +314,9 @@ func ServCommand(ctx *context.PrivateContext) {
 				return
 			}
 
-			userMode := perm.UnitAccessMode(unitType)
+			results.UserMode = perm.UnitAccessMode(unitType)
 
-			if userMode < mode {
+			if results.UserMode < mode {
 				log.Warn("Failed authentication attempt for %s with key %s (not authorized to %s %s/%s) from %s", user.Name, key.Name, modeString, ownerName, repoName, ctx.RemoteAddr())
 				ctx.JSON(http.StatusUnauthorized, private.Response{
 					UserMsg: fmt.Sprintf("User: %d:%s with Key: %d:%s is not authorized to %s %s/%s.", user.ID, user.Name, key.ID, key.Name, modeString, ownerName, repoName),
@@ -353,6 +357,7 @@ func ServCommand(ctx *context.PrivateContext) {
 			})
 			return
 		}
+		results.UserMode = perm.AccessModeWrite
 		results.RepoID = repo.ID
 	}
 
@@ -381,13 +386,14 @@ func ServCommand(ctx *context.PrivateContext) {
 			return
 		}
 	}
-	log.Debug("Serv Results:\nIsWiki: %t\nDeployKeyID: %d\nKeyID: %d\tKeyName: %s\nUserName: %s\nUserID: %d\nOwnerName: %s\nRepoName: %s\nRepoID: %d",
+	log.Debug("Serv Results:\nIsWiki: %t\nDeployKeyID: %d\nKeyID: %d\tKeyName: %s\nUserName: %s\nUserID: %d\nUserMode: %d\nOwnerName: %s\nRepoName: %s\nRepoID: %d",
 		results.IsWiki,
 		results.DeployKeyID,
 		results.KeyID,
 		results.KeyName,
 		results.UserName,
 		results.UserID,
+		results.UserMode,
 		results.OwnerName,
 		results.RepoName,
 		results.RepoID)

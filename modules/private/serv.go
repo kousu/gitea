@@ -40,6 +40,7 @@ type ServCommandResults struct {
 	UserName    string
 	UserEmail   string
 	UserID      int64
+	UserMode    perm.AccessMode
 	OwnerName   string
 	RepoName    string
 	RepoID      int64
