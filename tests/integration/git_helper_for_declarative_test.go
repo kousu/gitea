@@ -39,6 +39,28 @@ func withKeyFile(t *testing.T, keyname string, callback func(string)) {
 		"ssh -o \"UserKnownHostsFile=/dev/null\" -o \"StrictHostKeyChecking=no\" -o \"IdentitiesOnly=yes\" -i \""+keyFile+"\" \"$@\""), 0o700)
 	assert.NoError(t, err)
 
+	// reset ssh wrapper afterwards
+	_gitSSH, gitSSHExists := os.LookupEnv("GIT_SSH")
+	defer func() {
+		if gitSSHExists {
+			os.Setenv("GIT_SSH", _gitSSH)
+		}
+	}()
+
+	_gitSSHCommand, gitSSHCommandExists := os.LookupEnv("GIT_SSH_COMMAND")
+	defer func() {
+		if gitSSHCommandExists {
+			os.Setenv("GIT_SSH_COMMAND", _gitSSHCommand)
+		}
+	}()
+
+	_gitSSHVariant, gitSSHVariantExists := os.LookupEnv("GIT_SSH_VARIANT")
+	defer func() {
+		if gitSSHVariantExists {
+			os.Setenv("GIT_SSH_VARIANT", _gitSSHVariant)
+		}
+	}()
+
 	// Setup ssh wrapper
 	os.Setenv("GIT_SSH", path.Join(tmpDir, "ssh"))
 	os.Setenv("GIT_SSH_COMMAND",
