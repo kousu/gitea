@@ -289,7 +289,7 @@ func ServCommand(ctx *context.PrivateContext) {
 			repo.IsPrivate ||
 			owner.Visibility.IsPrivate() ||
 			(user != nil && user.IsRestricted) || // user will be nil if the key is a deploykey
-			( /*setting.Annex.Enabled && */ len(verbs) > 0 && verbs[0] == "git-annex-shell") || // git-annex has its own permission enforcement, for which we expose results.UserMode
+			(setting.Annex.Enabled && len(verbs) > 0 && verbs[0] == "git-annex-shell") || // git-annex has its own permission enforcement, for which we expose results.UserMode
 			setting.Service.RequireSignInView) {
 		if key.Type == asymkey_model.KeyTypeDeploy {
 			results.UserMode = deployKey.Mode

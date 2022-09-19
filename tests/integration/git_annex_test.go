@@ -56,12 +56,9 @@ Test that permissions are enforced on git-annex-shell commands.
 	Along the way, test that uploading, downloading, and deleting all work.
 */
 func TestGitAnnexPermissions(t *testing.T) {
-	/*
-		// TODO: look into how LFS did this
-		if !setting.Annex.Enabled {
-			t.Skip()
-		}
-	*/
+	if !setting.Annex.Enabled {
+		t.Skip("Skipping since annex support is disabled.")
+	}
 
 	// Each case below is split so that 'clone' is done as
 	// the repo owner, but 'copy' as the user under test.
