@@ -42,8 +42,8 @@ func (b *Basic) Name() string {
 // name/token on successful validation.
 // Returns nil if header is empty or validation fails.
 func (b *Basic) Verify(req *http.Request, w http.ResponseWriter, store DataStore, sess SessionStore) (*user_model.User, error) {
-	// Basic authentication should only fire on API, Download or on Git or LFSPaths
-	if !middleware.IsAPIPath(req) && !isContainerPath(req) && !isAttachmentDownload(req) && !isGitRawReleaseOrLFSPath(req) {
+	// Basic authentication should only fire on API, Download or on Git, LFSPaths or Git-Annex paths
+	if !middleware.IsAPIPath(req) && !isContainerPath(req) && !isAttachmentDownload(req) && !isGitRawReleaseOrLFSPath(req) && !isAnnexPath(req) {
 		return nil, nil
 	}
 

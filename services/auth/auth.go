@@ -51,6 +51,17 @@ func isGitRawReleaseOrLFSPath(req *http.Request) bool {
 	return false
 }
 
+var annexPathRe = regexp.MustCompile(`^/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+/annex/`)
+
+func isAnnexPath(req *http.Request) bool {
+	if setting.Annex.Enabled {
+		// "/config" is git's config, not specifically git-annex's; but the only current
+		// user of it is when git-annex downloads the annex.uuid during 'git annex init'.
+		return strings.HasSuffix(req.URL.Path, "/config") || annexPathRe.MatchString(req.URL.Path)
+	}
+	return false
+}
+
 // handleSignIn clears existing session variables and stores new ones for the specified user object
 func handleSignIn(resp http.ResponseWriter, req *http.Request, sess SessionStore, user *user_model.User) {
 	// We need to regenerate the session...

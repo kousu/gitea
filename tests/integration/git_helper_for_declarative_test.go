@@ -70,6 +70,13 @@ func withKeyFile(t *testing.T, keyname string, callback func(string)) {
 	callback(keyFile)
 }
 
+func createHTTPUrl(gitPath string, u *url.URL) *url.URL {
+	// this assumes u contains the HTTP base URL that Gitea is running on
+	u2 := *u
+	u2.Path = gitPath
+	return &u2
+}
+
 func createSSHUrl(gitPath string, u *url.URL) *url.URL {
 	u2 := *u
 	u2.Scheme = "ssh"
