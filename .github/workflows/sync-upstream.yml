@@ -96,7 +96,7 @@ jobs:
       # Notice too: we've **forked** a copy of tibdex/github-app-token,
       # to avoid passing our tokens through potentially untrusted code.
       # Even if it is safe now, it might become malicious in the future.
-      uses: neuropoly/github-app-token@v1.5.1
+      uses: neuropoly/github-app-token@v1.7.0
       with:
         app_id: ${{ secrets.APP_ID }}
         private_key: ${{ secrets.APP_KEY }}
