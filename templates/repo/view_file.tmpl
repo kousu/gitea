@@ -86,6 +86,10 @@
 						</audio>
 					{{else if .IsPDFFile}}
 						<iframe width="100%" height="600px" src="{{AssetUrlPrefix}}/vendor/plugins/pdfjs/web/viewer.html?file={{$.RawFileLink}}"></iframe>
+					{{else if .IsNIfTI}}
+						<div class="cornerstone-viewport" style="width: 100%; height: 600px" data-src="nifti:{{$.RawFileLink}}"></div>
+					{{else if .IsDICOM}}
+						<div class="cornerstone-viewport" style="width: 100%; height: 600px" data-src="wadouri:{{$.RawFileLink}}"></div>
 					{{else}}
 						<a href="{{$.RawFileLink}}" rel="nofollow" class="btn btn-gray btn-radius">{{.locale.Tr "repo.file_view_raw"}}</a>
 					{{end}}
