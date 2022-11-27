@@ -9,6 +9,7 @@ import (
 	"time"
 
 	git_model "code.gitea.io/gitea/models/git"
+	"code.gitea.io/gitea/modules/annex"
 	"code.gitea.io/gitea/modules/context"
 	"code.gitea.io/gitea/modules/git"
 	"code.gitea.io/gitea/modules/httpcache"
@@ -78,6 +79,26 @@ func ServeBlobOrLFS(ctx *context.Context, blob *git.Blob, lastModified time.Time
 		log.Error("ServeBlobOrLFS: Close: %v", err)
 	}
 	closed = true
+
+	// check for git-annex files
+	// (this code is weirdly redundant because I'm trying not to delete any lines in order to make merges easier)
+	isAnnexed, err := annex.IsAnnexed(blob)
+	if err != nil {
+		ctx.ServerError("annex.IsAnnexed", err)
+		return err
+	}
+	if isAnnexed {
+		content, err := annex.Content(blob)
+		if err != nil {
+			// XXX are there any other possible failure cases here?
+			// there are, there could be unrelated io errors; those should be ctx.ServerError()s
+			ctx.NotFound("annex.Content", err)
+			return err
+		}
+		defer content.Close()
+		common.ServeContentByReadSeeker(ctx, ctx.Repo.TreePath, lastModified, content)
+		return nil
+	}
 
 	return common.ServeBlob(ctx, blob, lastModified)
 }

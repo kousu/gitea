@@ -7,7 +7,9 @@ package integration
 import (
 	"errors"
 	"fmt"
+	"io"
 	"math/rand"
+	"net/http"
 	"net/url"
 	"os"
 	"path"
@@ -49,6 +51,63 @@ func doCreateRemoteAnnexRepository(t *testing.T, u *url.URL, ctx APITestContext,
 		return fmt.Errorf("Unable to initialize remote repo with git-annex fixture: %w", err)
 	}
 	return nil
+}
+
+func TestGitAnnexMedia(t *testing.T) {
+	if !setting.Annex.Enabled {
+		t.Skip("Skipping since annex support is disabled.")
+	}
+
+	onGiteaRun(t, func(t *testing.T, u *url.URL) {
+		ctx := NewAPITestContext(t, "user2", "annex-media-test", auth_model.AccessTokenScopeRepo)
+
+		// create a public repo
+		require.NoError(t, doCreateRemoteAnnexRepository(t, u, ctx, false))
+
+		// the filenames here correspond to specific cases defined in doInitAnnexRepository()
+		t.Run("AnnexSymlink", func(t *testing.T) {
+			defer tests.PrintCurrentTest(t)()
+			doAnnexMediaTest(t, ctx, "annexed.tiff")
+		})
+		t.Run("AnnexPointer", func(t *testing.T) {
+			defer tests.PrintCurrentTest(t)()
+			doAnnexMediaTest(t, ctx, "annexed.bin")
+		})
+	})
+}
+
+func doAnnexMediaTest(t *testing.T, ctx APITestContext, file string) {
+	// Make sure that downloading via /media on the website recognizes it should give the annexed content
+
+	// TODO:
+	// - [ ] roll this into TestGitAnnexPermissions to ensure that permission enforcement works correctly even on /media?
+
+	session := loginUser(t, ctx.Username) // logs in to the http:// site/API, storing a cookie;
+	// this is a different auth method than the git+ssh:// or git+http:// protocols TestGitAnnexPermissions uses!
+
+	// compute server-side path of the annexed file
+	remoteRepoPath := path.Join(setting.RepoRootPath, ctx.GitPath())
+	remoteObjectPath, err := contentLocation(remoteRepoPath, file)
+	require.NoError(t, err)
+
+	// download annexed file
+	localObjectPath := path.Join(t.TempDir(), file)
+	fd, err := os.OpenFile(localObjectPath, os.O_CREATE|os.O_WRONLY, 0o777)
+	defer fd.Close()
+	require.NoError(t, err)
+
+	mediaLink := path.Join("/", ctx.Username, ctx.Reponame, "/media/branch/master", file)
+	req := NewRequest(t, "GET", mediaLink)
+	resp := session.MakeRequest(t, req, http.StatusOK)
+
+	_, err = io.Copy(fd, resp.Body)
+	require.NoError(t, err)
+	fd.Close()
+
+	// verify the download
+	match, err := util.FileCmp(localObjectPath, remoteObjectPath, 0)
+	require.NoError(t, err)
+	require.True(t, match, "Annexed files should be the same")
 }
 
 /*
@@ -758,16 +817,16 @@ func doAnnexInitTest(remoteRepoPath, repoPath string) (err error) {
 	}
 
 	// - method 1: 'git annex whereis'.
-	//   Demonstrates that git-annex understands the annexed file can be found in the remote annex.
-	annexWhereis, _, err := git.NewCommandContextNoGlobals(git.DefaultContext, "annex", "whereis", "large.bin").RunStdString(&git.RunOpts{Dir: repoPath})
+	//   Demonstrates that git-annex understands annexed files can be found in the remote annex.
+	annexWhereis, _, err := git.NewCommandContextNoGlobals(git.DefaultContext, "annex", "whereis", "annexed.bin").RunStdString(&git.RunOpts{Dir: repoPath})
 	if err != nil {
-		return fmt.Errorf("Couldn't `git annex whereis large.bin`: %w", err)
+		return fmt.Errorf("Couldn't `git annex whereis`: %w", err)
 	}
 	// Note: this regex is unanchored because 'whereis' outputs multiple lines containing
 	//       headers and 1+ remotes and we just want to find one of them.
 	match = regexp.MustCompile(regexp.QuoteMeta(remoteAnnexUUID) + " -- .* \\[origin\\]\n").MatchString(annexWhereis)
 	if !match {
-		return errors.New("'git annex whereis' should report large.bin is known to be in [origin]")
+		return errors.New("'git annex whereis' should report files are known to be in [origin]")
 	}
 
 	return nil
@@ -783,27 +842,56 @@ func doAnnexDownloadTest(remoteRepoPath, repoPath string) (err error) {
 		return err
 	}
 
-	// verify the file was downloaded
-	localObjectPath, err := contentLocation(repoPath, "large.bin")
+	// verify the files downloaded
+
+	cmp := func(filename string) error {
+		localObjectPath, err := contentLocation(repoPath, filename)
+		if err != nil {
+			return err
+		}
+		// localObjectPath := path.Join(repoPath, filename) // or, just compare against the checked-out file
+
+		remoteObjectPath, err := contentLocation(remoteRepoPath, filename)
+		if err != nil {
+			return err
+		}
+
+		match, err := util.FileCmp(localObjectPath, remoteObjectPath, 0)
+		if err != nil {
+			return err
+		}
+		if !match {
+			return errors.New("Annexed files should be the same")
+		}
+
+		return nil
+	}
+
+	// this is the annex-symlink file
+	stat, err := os.Lstat(path.Join(repoPath, "annexed.tiff"))
 	if err != nil {
+		return fmt.Errorf("Lstat: %w", err)
+	}
+	if !((stat.Mode() & os.ModeSymlink) != 0) {
+		// this line is really just double-checking that the text fixture is set up correctly
+		return errors.New("*.tiff should be a symlink")
+	}
+	if err = cmp("annexed.tiff"); err != nil {
 		return err
 	}
-	// localObjectPath := path.Join(repoPath, "large.bin") // or, just compare against the checked-out file
 
-	remoteObjectPath, err := contentLocation(remoteRepoPath, "large.bin")
+	// this is the annex-pointer file
+	stat, err = os.Lstat(path.Join(repoPath, "annexed.bin"))
 	if err != nil {
-		return err
+		return fmt.Errorf("Lstat: %w", err)
 	}
+	if !((stat.Mode() & os.ModeSymlink) == 0) {
+		// this line is really just double-checking that the text fixture is set up correctly
+		return errors.New("*.bin should not be a symlink")
+	}
+	err = cmp("annexed.bin")
 
-	match, err := util.FileCmp(localObjectPath, remoteObjectPath, 0)
-	if err != nil {
-		return err
-	}
-	if !match {
-		return errors.New("Annexed files should be the same")
-	}
-
-	return nil
+	return err
 }
 
 func doAnnexUploadTest(remoteRepoPath, repoPath string) (err error) {
@@ -948,16 +1036,36 @@ func doInitAnnexRepository(repoPath string) error {
 		return err
 	}
 
-	// add a file to the annex
-	err = generateRandomFile(1024*1024/4, path.Join(repoPath, "large.bin"))
+	// add files to the annex, stored via annex symlinks
+	// // a binary file
+	err = generateRandomFile(1024*1024/4, path.Join(repoPath, "annexed.tiff"))
 	if err != nil {
 		return err
 	}
+
+	err = git.NewCommandContextNoGlobals(git.DefaultContext, "annex", "add", ".").Run(&git.RunOpts{Dir: repoPath})
+	if err != nil {
+		return err
+	}
+
+	// add files to the annex, stored via git-annex-smudge
+	// // a binary file
+	err = generateRandomFile(1024*1024/4, path.Join(repoPath, "annexed.bin"))
+	if err != nil {
+		return err
+	}
+
+	if err != nil {
+		return err
+	}
+
 	err = git.AddChanges(repoPath, false, ".")
 	if err != nil {
 		return err
 	}
-	err = git.CommitChanges(repoPath, git.CommitChangesOptions{Message: "Annex a file"})
+
+	// save everything
+	err = git.CommitChanges(repoPath, git.CommitChangesOptions{Message: "Annex files"})
 	if err != nil {
 		return err
 	}
