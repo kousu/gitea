@@ -19,6 +19,7 @@ import (
 	"code.gitea.io/gitea/models/db"
 	"code.gitea.io/gitea/models/perm"
 	repo_model "code.gitea.io/gitea/models/repo"
+	"code.gitea.io/gitea/modules/annex"
 	"code.gitea.io/gitea/modules/git"
 	"code.gitea.io/gitea/modules/setting"
 	api "code.gitea.io/gitea/modules/structs"
@@ -783,13 +784,13 @@ func doAnnexDownloadTest(remoteRepoPath, repoPath string) (err error) {
 	}
 
 	// verify the file was downloaded
-	localObjectPath, err := annexObjectPath(repoPath, "large.bin")
+	localObjectPath, err := contentLocation(repoPath, "large.bin")
 	if err != nil {
 		return err
 	}
 	// localObjectPath := path.Join(repoPath, "large.bin") // or, just compare against the checked-out file
 
-	remoteObjectPath, err := annexObjectPath(remoteRepoPath, "large.bin")
+	remoteObjectPath, err := contentLocation(remoteRepoPath, "large.bin")
 	if err != nil {
 		return err
 	}
@@ -836,13 +837,13 @@ func doAnnexUploadTest(remoteRepoPath, repoPath string) (err error) {
 	}
 
 	// verify the file was uploaded
-	localObjectPath, err := annexObjectPath(repoPath, "contribution.bin")
+	localObjectPath, err := contentLocation(repoPath, "contribution.bin")
 	if err != nil {
 		return err
 	}
 	// localObjectPath := path.Join(repoPath, "contribution.bin") // or, just compare against the checked-out file
 
-	remoteObjectPath, err := annexObjectPath(remoteRepoPath, "contribution.bin")
+	remoteObjectPath, err := contentLocation(remoteRepoPath, "contribution.bin")
 	if err != nil {
 		return err
 	}
@@ -996,26 +997,30 @@ Find the path in .git/annex/objects/ of the contents for a given annexed file.
 
 	TODO: pass a parameter to allow examining non-HEAD branches
 */
-func annexObjectPath(repoPath, file string) (string, error) {
-	// NB: `git annex lookupkey` is more reliable, but doesn't work in bare repos.
-	annexKey, _, err := git.NewCommandContextNoGlobals(git.DefaultContext, "show").AddDynamicArguments("HEAD:" + file).RunStdString(&git.RunOpts{Dir: repoPath})
+func contentLocation(repoPath, file string) (path string, err error) {
+	path = ""
+
+	repo, err := git.OpenRepository(git.DefaultContext, repoPath)
 	if err != nil {
-		return "", fmt.Errorf("in %s: %w", repoPath, err) // the error from git prints the filename but not repo
+		return
 	}
 
-	// There are two formats an annexed file pointer might be:
-	// * a symlink to .git/annex/objects/$HASHDIR/$ANNEX_KEY/$ANNEX_KEY - used by files created with 'git annex add'
-	// * a text file containing /annex/objects/$ANNEX_KEY - used by files for which 'git add' was configured to run git-annex-smudge
-	// This recovers $ANNEX_KEY from either case:
-	annexKey = path.Base(strings.TrimSpace(annexKey))
-
-	contentPath, _, err := git.NewCommandContextNoGlobals(git.DefaultContext, "annex", "contentlocation").AddDynamicArguments(annexKey).RunStdString(&git.RunOpts{Dir: repoPath})
+	commitID, err := repo.GetRefCommitID("HEAD") // NB: to examine a *branch*, prefix with "refs/branch/", or call repo.GetBranchCommitID(); ditto for tags
 	if err != nil {
-		return "", fmt.Errorf("in %s: %s does not seem to be annexed: %w", repoPath, file, err)
+		return
 	}
-	contentPath = strings.TrimSpace(contentPath)
 
-	return path.Join(repoPath, contentPath), nil
+	commit, err := repo.GetCommit(commitID)
+	if err != nil {
+		return
+	}
+
+	treeEntry, err := commit.GetTreeEntryByPath(file)
+	if err != nil {
+		return
+	}
+
+	return annex.ContentLocation(treeEntry.Blob())
 }
 
 /* like withKeyFile(), but automatically sets it the account given in ctx for use by git-annex */

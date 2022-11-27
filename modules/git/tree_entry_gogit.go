@@ -89,6 +89,7 @@ func (te *TreeEntry) Blob() *Blob {
 
 	return &Blob{
 		ID:              te.gogitTreeEntry.Hash,
+		repo:            te.ptree.repo,
 		gogitEncodedObj: encodedObj,
 		name:            te.Name(),
 	}
