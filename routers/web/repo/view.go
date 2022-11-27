@@ -589,6 +589,10 @@ func renderFile(ctx *context.Context, entry *git.TreeEntry, treeLink, rawLink st
 	case fInfo.st.IsImage() && (setting.UI.SVG.Enabled || !fInfo.st.IsSvgImage()):
 		ctx.Data["IsImageFile"] = true
 		ctx.Data["CanCopyContent"] = true
+	case strings.HasSuffix(strings.ToLower(blob.Name()), ".nii") || strings.HasSuffix(strings.ToLower(blob.Name()), ".nii.gz"):
+		ctx.Data["IsNIfTI"] = true
+	case strings.HasSuffix(strings.ToLower(blob.Name()), ".dcm") || strings.HasSuffix(strings.ToLower(blob.Name()), ".dicom"):
+		ctx.Data["IsDICOM"] = true
 	default:
 		if fInfo.fileSize >= setting.UI.MaxDisplayFileSize {
 			ctx.Data["IsFileTooLarge"] = true
