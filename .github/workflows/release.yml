@@ -21,10 +21,10 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y make git xz-utils
-      # per README.md, building needs Go 1.17 and Node LTS
+      # per README.md, building needs Go 1.19 and Node LTS
       - uses: actions/setup-go@v3
         with:
-          go-version: '^1.17' # The Go version to download (if necessary) and use.
+          go-version: '^1.19' # The Go version to download (if necessary) and use.
       - uses: actions/setup-node@v3
         with:
           node-version: 'lts/*'
