@@ -20,7 +20,7 @@ jobs:
 
       - name: Install toolchain
         run: |
-          sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y make git xz-utils
+          sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y make git xz-utils libpam0g-dev
       # per README.md, building needs Go 1.19 and Node LTS
       - uses: actions/setup-go@v3
         with:
@@ -36,7 +36,7 @@ jobs:
         #
         # Instead, just do native Linux compilation then pretend we did 'make release'.
         run: |
-          TAGS="bindata sqlite sqlite_unlock_notify" make build
+          TAGS="bindata sqlite sqlite_unlock_notify pam" make build
           mkdir -p dist/release
           cp -p gitea dist/release/gitea-$(git describe --tags --always)-linux-amd64
 
