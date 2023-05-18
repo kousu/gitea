@@ -1,0 +1,235 @@
+# This soft-fork of Gitea adds git-annex support (https://git-annex.branchable.com/)
+# git-annex is like git-lfs, which Gitea already supports, but more complicated,
+# except that it doesn't need an extra port open.
+#
+# We maintain three branches and N tags:
+# - main           - a mirror of upstream's main
+# - git-annex      - our patch (see it at: https://github.com/neuropoly/gitea/pull/1)
+# - release-action - release scripts + our front page
+# - $X-git-annex for each upstream tag $X (each created after we started tracking upstream, that is)
+#     which = $X + release-action + git-annex
+#
+# This branch, release-action, contains:
+#  - sync-upstream.yml (this)  - try to update the branches/tags
+#  - release.yml               - build and push to https://github.com/neuropoly/gitea/releases/
+# and it is our default branch because cronjobs are
+# only allowed to run on the default branch
+
+name: 'Sync Upstream'
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 08:00 Montreal time, every day
+    - cron:  '0 13 * * *'
+
+jobs:
+  sync_upstream:
+    name: 'Sync Upstream'
+    runs-on: ubuntu-latest
+    steps:
+
+    #- name: debug - github object
+    #  run: |
+    #    echo '${{ tojson(github) }}'
+
+    - name: Git Identity
+      run: |
+        set -ex
+        git config --global user.name "Actions Bot"
+        # or 41898282+github-actions[bot]@users.noreply.github.com ?
+        git config --global user.email action@github.com
+
+    #- name: Git config
+    #  run: |
+    #    set -ex
+    #    # disambiguates 'git checkout' so it always uses this repo
+    #    #git config --global checkout.defaultRemote origin
+
+    - id: generate_token
+      # The default token provided doesn't have enough rights
+      # for 'git push --tags' to trigger the build in release.yml:
+      #
+      # > When you use the repository's GITHUB_TOKEN to perform tasks, events
+      # > triggered by the GITHUB_TOKEN will not create a new workflow run.
+      # > This prevents you from accidentally creating recursive workflow runs.
+      #
+      # ref: https://docs.github.com/en/actions/security-guides/automatic-token-authentication#using-the-github_token-in-a-workflow
+      #
+      # But we're not making a recursive workflow, and really do want to
+      # trigger the release.yml workflow.
+      #
+      # https://github.com/tibdex/github-app-token works around this by
+      # trading OAuth credentials (created at the Organization level) for
+      # a token credential (which can't be created except at the user level)
+      #
+      # Two alternate solutions are:
+      #
+      # 1. Provide a personal token (https://github.com/settings/tokens) but then
+      #    whoever does exposes their account to everyone in the organization,
+      #    and the organization is exposed to DoS if the person ever leaves.
+      # 2. Use workflow_call: (https://docs.github.com/en/actions/using-workflows/reusing-workflows)
+      #    but this is a substantial amount of intricate code
+      #    for something that should be simple.
+      #
+      # If you need to reconfigure this, know that you need to:
+      #
+      # 1. Create an OAuth credential at https://github.com/organizations/neuropoly/settings/apps
+      #   a. Set 'Name' = 'gitea-sync'
+      #   b. Set 'Homepage URL' = 'https://github.com/neuropoly/github-app-token'
+      #   c. Uncheck 'Webhook'
+      #   d. Set 'Repository permissions / Contents' = 'Access: Read & write'.
+      #   e. Set 'Where can this GitHub App be installed' = 'Only on this account'
+      # 2. Click 'Generate Private Key'; it will download a .pem file to your computer.
+      # 3. Store the credential in the repo at https://github.com/neuropoly/gitea/settings/secrets/actions
+      #    a. Set 'APP_ID' = the app ID displayed on https://github.com/organizations/neuropoly/settings/apps/gitea-sync
+      #    b. Set 'APP_KEY' = the contents of the .pem file it downloaded.
+      #    c. Now you can throw away the .pem file.
+      # 4. Install the app:
+      #    a. Go to https://github.com/organizations/neuropoly/settings/apps/gitea-sync/installations
+      #    b. Click 'Install'
+      #    c. Pick this repo
+      #    d. Click 'Install' for real this time
+      #
+      # ref: https://github.com/peter-evans/create-pull-request/blob/main/docs/concepts-guidelines.md#authenticating-with-github-app-generated-tokens
+      #
+      # Notice too: we've **forked** a copy of tibdex/github-app-token,
+      # to avoid passing our tokens through potentially untrusted code.
+      # Even if it is safe now, it might become malicious in the future.
+      uses: neuropoly/github-app-token@v1.7.0
+      with:
+        app_id: ${{ secrets.APP_ID }}
+        private_key: ${{ secrets.APP_KEY }}
+
+    - uses: actions/checkout@v3
+      with:
+        token: ${{ steps.generate_token.outputs.token }}
+
+    - name: Add upstream
+      run: |
+        set -ex
+
+        PARENT=$(curl -s https://api.github.com/repos/${{github.repository}} | jq -r '.parent.clone_url // empty')
+        git remote add upstream "$PARENT"
+
+    - name: Fetch current origin
+      run: |
+        set -ex
+        # Because actions/checkout does a lazy, shallow checkout
+        # we need to use --shallow-since to make sure there's
+        # enough common history that git can tell how the two
+        # branches relate.
+        #
+        # We *could* do a full checkout by setting depth: 0 above,
+        # but this is faster, especially on a large repo like this one.
+        #
+        # Since this runs daily, 1 week should be plenty.
+        git fetch '--shallow-since=1 week' origin main "${{ github.ref_name }}" git-annex
+        git fetch '--shallow-since=1 week' upstream main
+
+    - name: Sync main
+      # force main to be identical to upstream
+      # This throws away any commits to our local main
+      # so don't commit anything to that branch.
+      run: |
+        set -ex
+        git checkout -B main upstream/main
+
+    - name: Sync ${{ github.ref_name }}
+      run: |
+        set -ex
+        git checkout "${{ github.ref_name }}"
+        git rebase main
+
+    - name: Rebase git-annex, the feature branch
+      # This is the meatiest part of this script: rebase git-annex on top of upstream.
+      # Occasionally this step will fail -- when there's a merge conflict with upstream.
+      # In that case, you will get an email about it, and you should run these steps
+      # manually, and fix the merge conflicts that way.
+      run: |
+        set -ex
+        git checkout git-annex
+        git rebase main
+
+    - name: Construct latest version with git-annex on top
+      id: fork
+      run: |
+        # for the latest tag vX.Y.Z, construct tag vX.Y.Z-git-annex.
+        # Only construct the *latest* release to reduce the risk of conflicts
+        # (we have to ask 'git tag' instead of the more elegant method of syncing tags
+        #  and using Github Actions' `on: push: tags: ...` because those upstream tags
+        #  *don't contain this workflow*, so there would be no way to trigger this)
+        #
+        # This will trigger release.yml to build and publish the latest version, too
+        set -e
+
+        # git fetch is supposed to get any tags corresponding to commits it downloads,
+        # but this behaviour is ignored when combined with --shallow, and there doesn't
+        # seem to be any other way to get a list of tags without downloading all of them,
+        # which effectively does --unshallow. But the GitHub API provides a shortcut, and
+        # using this saves about 30s over downloading the unshallow repo:
+        PARENT_API=$(curl -s https://api.github.com/repos/${{github.repository}} | jq -r '.parent.url // empty')
+        PARENT_TAGS=$(curl -s "$PARENT_API"| jq -r '.tags_url // empty')
+        RELEASE=$(curl -s "$PARENT_TAGS" | jq -r 'map(.name | select(test("dev") | not)) | first // empty')
+
+        # But if we decide to just unshallow the entire repo from the start,
+        # then you can use this instead:
+        #RELEASE="$(git tag -l --sort=-v:refname | egrep -v 'git-annex$' | head -n 1)"
+
+        if git fetch -q --depth 1 origin tag "$RELEASE"-git-annex 2>/dev/null; then
+          echo "$RELEASE-git-annex already published :tada:"
+        else
+          set -x
+          # BEWARE: the releases are tagged off of *release* branches:
+          #         https://github.com/go-gitea/gitea/tree/release/v1.18
+          #         https://github.com/go-gitea/gitea/tree/release/v1.17
+          #
+          #         These were branched from 'main' at some point, and since
+          #         have been added to with backport patches. For example,
+          #         https://github.com/go-gitea/gitea/pull/19567 is the backport
+          #         into v1.16 of https://github.com/go-gitea/gitea/pull/19566.
+          #         In that case, the two patches were identical, but it's possible
+          #         a merge conflict could force edits to the backport.
+          #
+          #         To fit into their scheme, we would have to manuually maintain
+          #         our own git-annex branch (based on upstream/main), another
+          #         release/v1.18-git-annex (based on upstream/release/v1.18), and a
+          #         release/v1.17-git-annex (based on upstream/release/v1.17), etc.
+          #
+          #         That seems like a lot of work, so we're taking a shortcut:
+          #         just cherry-pick main..git-annex on top of their releases
+          #         and hope for the best.
+          #
+          #         The only trouble I'm aware of with this is that a merge conflict
+          #         will show up against upstream/main but might not exist against
+          #         v1.19.1 or whatever the latest tag is; so fixing it for main will
+          #         cause a different merge conflict with the release.
+          #
+          #         But we only need each release to get tagged and published once
+          #         (see: the if statement above), so the best way to handle that case
+          #         is to manually fix the conflict against upstream/main, and at the
+          #         same time manually tag the latest release without the additional fixes.
+          #         This is basically the same work we would do anyway if we were manually
+          #         backporting every update to a separate release branch anyway, but
+          #         only needs to be investigated when the automated build fails.
+          #
+          #         tl;dr: If this step fails due to merge conflicts, you should
+          #         manually fix them and then manually create the tag,
+          #         sidestepping this
+
+          # Because the tags don't share close history with 'main', GitHub would reject us
+          # pushing them as dangling commit histories. So this part has to be --unshallow.
+          # It takes longer but oh well, GitHub can afford it.
+          git fetch --unshallow upstream tag "$RELEASE"
+
+          git checkout -q "$RELEASE"
+
+          git cherry-pick main.."${{ github.ref_name }}"  # Make sure release.yml is in the tag, so it triggers a build
+          git cherry-pick main..git-annex
+
+          git tag "$RELEASE"-git-annex
+        fi
+    - name: Upload everything back to Github
+      run: |
+        git push -f --all
+        git push -f --tags
